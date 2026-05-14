@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - main
+    tags:
+      - "v*.*.*"
     paths-ignore:
       - ".github/**"
       - ".github/*"
@@ -16,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
 
     permissions:
-      contents: read
+      contents: write
       packages: write
       id-token: write # needed for signing the images with GitHub OIDC Token
 
@@ -48,8 +50,11 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=raw,value=latest
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
             type=sha,format=short,prefix=sha-
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
 
       - name: Build and push
         id: build
@@ -59,9 +64,6 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
 
-      # ------------------------------------------------------------
-      # ✅ Sign ALL tags by DIGEST (correct)
-      # ------------------------------------------------------------
       - name: Sign images (Cosign keyless)
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
@@ -76,3 +78,26 @@ jobs:
           echo "${images}"
 
           cosign sign --yes ${images}
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          IMAGE="ghcr.io/${{ github.repository }}"
+          VERSION="${{ github.ref_name }}"
+
+          gh release create "${VERSION}" \
+            --generate-notes \
+            --title "${VERSION}" \
+            --notes "## Container Image
+
+          \`\`\`
+          docker pull ${IMAGE}:${VERSION#v}
+          \`\`\`
+
+          **Digest:** \`${DIGEST}\`
+
+          **All tags published:**
+          $(echo "${{ steps.meta.outputs.tags }}" | sed 's/^/- `/' | sed 's/$/`/')"
